@@ -1,0 +1,42 @@
+---
+title: "GO_Term_Wrangling"
+output: html_document
+author: "Alex Elbaz"
+date: "2026-11-05"
+---
+
+## Preamble
+
+The intent of this script is to convert the available `.gaf` file for our organism into a table suitable for use with `topGO`.
+
+## 1. Load Libraries
+
+```{r}
+suppressPackageStartupMessages(library(tidyverse))
+```
+
+## 2. Load .gaf file (raw GO terms table) + Basic Data Cleaning
+
+```{r}
+# Load data
+go_tbl_raw <- read_tsv("../GO_enrichment_files/GO_terms/GCF_017639785.1_BCM_Maur_2.0_gene_ontology.gaf",
+                       skip = 8)
+
+# Select only relevant columns
+go_tbl_clean <- select(go_tbl_raw, GeneID, Symbol, Qualifier, GO_ID, Reference, Aspect, Gene_Name)
+
+# Save intermediary table (may be useful to see references for certain annotations)
+write_tsv(go_tbl_clean, "../GO_enrichment_files/GO_terms/go_terms_cleaned.tsv")
+```
+
+## 3. Generate & Save Table Suitable for use in GO Enrichment
+
+```{r}
+# Generate Table
+topGO_tbl <- go_tbl_clean %>%
+  group_by(Symbol) %>%
+  summarize(GO_IDs = paste(GO_ID, collapse = ", "))
+
+# Save Table
+write_tsv(topGO_tbl, "../GO_enrichment_files/GO_terms/mesaur_GOIDs.tsv", col_names = FALSE)
+```

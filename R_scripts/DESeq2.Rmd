@@ -1,12 +1,7 @@
 ---
-title: "Differential Gene Expression Analysis with DESeq2"
-author: "Alex Elbaz"
-date: "2026-10-30"
-output: 
-  html_document:
-    toc: TRUE
-    toc_float: TRUE
-    theme: cerulean
+title: "deseq2_analysis"
+output: html_document
+date: "2026-11-26"
 ---
 
 ## Preamble
@@ -20,311 +15,503 @@ library(tidyverse)
 library(DESeq2)
 library(pheatmap)
 library(RColorBrewer)
+library(ggrepel)
 ```
 
 ## 2. Load Data
 
-One data frame per sample replicate, naming as follows:
+Note that this analysis uses the processed gene counts from the subset of observations excluding the 'run1' technical replicate for each 4dpi sample; the reasons for this are discussed in our paper.
 
-- dpi<dpi-group>\_<infection-group>\_<sex><sample-number>\_rep<replicate-number>
-  - e.g., dpi4_mock_m1_rep1
-
-### 2.1 4 Days Post Infection Samples
+### 2.1 By technical replicate
 
 ```{r}
-# Control (mock-infected) Samples
-dpi4_mock_m1_rep1 <- read_tsv("gene_counts/4dpi_samples/14_S4_M_mock/ERR14210197_genecounts.out.tab",
-                              col_names = c("gene_id", "total", "antisense", "sense"),
-                              skip = 4)
-dpi4_mock_m1_rep2 <- read_tsv("gene_counts/4dpi_samples/14_S4_M_mock/ERR14210198_genecounts.out.tab",
-                              col_names = c("gene_id", "total", "antisense", "sense"),
-                              skip = 4)
-dpi4_mock_m1_rep3 <- read_tsv("gene_counts/4dpi_samples/14_S4_M_mock/ERR14210199_genecounts.out.tab",
-                              col_names = c("gene_id", "total", "antisense", "sense"),
-                              skip = 4)
-
-# SARS-CoV-2 Infected Samples
-dpi4_cov_m1_rep1 <- read_tsv("gene_counts/4dpi_samples/137_S26_M_cov/ERR14210176_genecounts.out.tab",
-                             col_names = c("gene_id", "total", "antisense", "sense"),
-                             skip = 4)
-dpi4_cov_m1_rep2 <- read_tsv("gene_counts/4dpi_samples/137_S26_M_cov/ERR14210177_genecounts.out.tab",
-                             col_names = c("gene_id", "total", "antisense", "sense"),
-                             skip = 4)
-dpi4_cov_m1_rep3 <- read_tsv("gene_counts/4dpi_samples/137_S26_M_cov/ERR14210178_genecounts.out.tab",
-                             col_names = c("gene_id", "total", "antisense", "sense"),
-                             skip = 4)
+rep_metadata <- read_tsv("../data/processed_counts/subset_observations/rep_metadata.tsv")
+rep_count_matrix <- read_tsv("../data/processed_counts/subset_observations/rep_count_matrix.tsv")
 ```
 
-### 2.2 80 Days Post Infection Samples
+### 2.2 By biological sample
 
 ```{r}
-# Control (mock-infected) Samples
-dpi80_mock_m1_rep1 <- read_tsv("gene_counts/80dpi_samples/mocksal_M1/ERR14210224_genecounts.out.tab",
-                               col_names = c("gene_id", "total", "antisense", "sense"),
-                               skip = 4)
-dpi80_mock_m1_rep2 <- read_tsv("gene_counts/80dpi_samples/mocksal_M1/ERR14210225_genecounts.out.tab",
-                               col_names = c("gene_id", "total", "antisense", "sense"),
-                               skip = 4)
-
-# SARS-CoV-2 Infected Samples
-dpi80_cov_m1_rep1 <- read_tsv("gene_counts/80dpi_samples/covsal_M1/ERR14210240_genecounts.out.tab",
-                              col_names = c("gene_id", "total", "antisense", "sense"),
-                              skip = 4)
-dpi80_cov_m1_rep2 <- read_tsv("gene_counts/80dpi_samples/covsal_M1/ERR14210241_genecounts.out.tab",
-                              col_names = c("gene_id", "total", "antisense", "sense"),
-                              skip = 4)
+sam_metadata <- read_tsv("../data/processed_counts/subset_observations/sam_metadata.tsv")
+sam_count_matrix <- read_tsv("../data/processed_counts/subset_observations/sam_count_matrix.tsv")
 ```
 
-## 3. Merge All Samples into Single Matrix
+## 3. Convert Data to Format Required for DESeq2
+
+### 3.1 By technical replicate
 
 ```{r}
-data_matrix <- dpi4_mock_m1_rep1 %>% select(gene_id, dpi4_mock_m1_rep1 = sense) %>%
-  inner_join(dpi4_mock_m1_rep2 %>% select(gene_id, dpi4_mock_m1_rep2 = sense), by = "gene_id") %>%
-  inner_join(dpi4_mock_m1_rep3 %>% select(gene_id, dpi4_mock_m1_rep3 = sense), by = "gene_id") %>%
-  inner_join(dpi4_cov_m1_rep1 %>% select(gene_id, dpi4_cov_m1_rep1 = sense), by = "gene_id") %>%
-  inner_join(dpi4_cov_m1_rep2 %>% select(gene_id, dpi4_cov_m1_rep2 = sense), by = "gene_id") %>%
-  inner_join(dpi4_cov_m1_rep3 %>% select(gene_id, dpi4_cov_m1_rep3 = sense), by = "gene_id") %>%
-  inner_join(dpi80_mock_m1_rep1 %>% select(gene_id, dpi80_mock_m1_rep1 = sense), by = "gene_id") %>%
-  inner_join(dpi80_mock_m1_rep2 %>% select(gene_id, dpi80_mock_m1_rep2 = sense), by = "gene_id") %>%
-  inner_join(dpi80_cov_m1_rep1 %>% select(gene_id, dpi80_cov_m1_rep1 = sense), by = "gene_id") %>%
-  inner_join(dpi80_cov_m1_rep2 %>% select(gene_id, dpi80_cov_m1_rep2 = sense), by = "gene_id") %>%
-  as.matrix()
+# Convert count matrix into a true matrix
+rep_count_matrix <- rep_count_matrix %>% column_to_rownames(var = "gene_id")
+rep_count_matrix <- as.matrix(rep_count_matrix)
 
-head(data_matrix)
+# Convert metadata data frame to DESeq2 usable form
+rep_metadata <- rep_metadata %>% column_to_rownames(var = "rname")
+rep_metadata$sname <- as.factor(rep_metadata$sname)
+rep_metadata$dpi <- as.factor(rep_metadata$dpi)
+rep_metadata$sex <- as.factor(rep_metadata$sex)
+rep_metadata$infect <- as.factor(rep_metadata$infect)
 ```
 
-For compiling the metadata, so long as all the names follow a common naming convention, can just use the column names as strings and split on '\_' to get the different metadata points (i.e., dpi group, infected vs. control, sex (by "starts with m" and "starts with f"), and sample ("m1" is male sample 1... except might have issues with cross dpi m1 given that m1 dpi4 is not same as m1 dpi80...)).
-
-## 4. Generate Metadata File
+### 3.2 By biological sample
 
 ```{r}
-sample_names <- colnames(data_matrix)
-sample_names <- sample_names[2:length(sample_names)]
+# Convert count matrix into a true matrix
+sam_count_matrix <- sam_count_matrix %>% column_to_rownames(var = "gene_id")
+sam_count_matrix <- as.matrix(sam_count_matrix)
 
-raw_metadata <- str_split(sample_names, "_")
+# Generate human readable sample names
+sam_metadata <- sam_metadata %>%
+  mutate(group = sapply(str_split(sname, "-"), function(x) x[[1]][1])) %>%
+  mutate(readable_name = paste(dpi, "dpi", " ",
+                               if_else(sex == "F", "female", "male"), " ",
+                               if_else(infect == "cov", "infected", "mock"),
+                               " (", group, ")", sep = "")) %>%
+  select(-group)
 
-# Note that the value for each subsequent column will only be unique by observation
-# for all entries with the same values for *all* preceding columns.
-# For example, replicate 1 will be duplicated for unique combinations of all other fields.
-raw_metadata <- as.data.frame(do.call(rbind, raw_metadata),
-                              row.names = colnames(data_matrix),
-                              optional = FALSE,
-                              cut.names = FALSE,
-                              col.names = c("dpi", "condition", "sex", "sample", "rep"),
-                              new.names = !missing(col.names),
-                              check.names = !optional,
-                              stringsAsFactors = FALSE)
-# ^^ This still doesn't work quite right just FYI.
+# Convert metadata data frame to DESeq2 usable form
+sam_metadata <- sam_metadata %>% column_to_rownames(var = "sname")
+sam_metadata$dpi <- as.factor(sam_metadata$dpi)
+sam_metadata$sex <- as.factor(sam_metadata$sex)
+sam_metadata$infect <- as.factor(sam_metadata$infect)
 ```
 
-#### BELOW HERE IS OLD FROM TUTORIAL 7 FILE
+## 4. Prepare DESeq2 Matrix & Run Differential Expression Analysis
 
-We need to set up a `metadata` file whose rownames match the **name** and the **order** of the columns of our matrix above! You can use Excel to create the metadata file, or use the `data.frame()` function in R.
+### 4.1 By technical replicate
 
 ```{r}
-# Make our Metadata file that contains our column information for our matrix
-metadata <- data.frame(row.names = colnames(dat_matrix), 
-                       condition = c("1_hour", "1_hour", "12_hour", "12_hour"))
-metadata
+# Create DESeq2 object
+rep_dds_matrix <- DESeqDataSetFromMatrix(countData = rep_count_matrix,
+                                         colData = rep_metadata,
+                                         design = ~dpi*infect)
+
+# Set control conditions
+rep_dds_matrix$dpi <- relevel(rep_dds_matrix$dpi, ref = "4")
+rep_dds_matrix$infect <- relevel(rep_dds_matrix$infect, ref = "mock")
+rep_dds_matrix$sex <- relevel(rep_dds_matrix$sex, ref = "M")
+
+# Run DESeq2
+rep_dds <- DESeq(rep_dds_matrix)
 ```
 
-To make sure that the row names from our `metadata` file match the column names of our `matrix`, we can run the following code
+### 4.2 By biological sample
 
 ```{r}
-colnames(dat_matrix) == rownames(metadata)
+# Create DESeq2 object
+sam_dds_matrix <- DESeqDataSetFromMatrix(countData = sam_count_matrix, 
+                                         colData = sam_metadata,
+                                         design = ~dpi*infect)
+
+# Set control conditions
+sam_dds_matrix$dpi <- relevel(sam_dds_matrix$dpi, ref = "4")
+sam_dds_matrix$infect <- relevel(sam_dds_matrix$infect, ref = "mock")
+sam_dds_matrix$sex <- relevel(sam_dds_matrix$sex, ref = "M")
+
+# Run DESeq2
+sam_dds <- DESeq(sam_dds_matrix)
 ```
 
-We are ready to put our data into DESeq2!
+## 5. Generate & Save PCA Plots
 
-------------------------------------------------------------------------
+### 5.0 Define Helper Function
 
-## Running DESeq2
-
-DESeq2 requires that all of your data be in the shape of a `SummarizedExperiment` object. Since reshaping your input data with your code would be complicated, there are functions within DESeq2 specific for the source of your counts file, which will prepare your data for use in DESeq2. The function we need is called `DESeqDataSetFromMatrix()`. The required arguments for this function are: \* `countData`, which must provide a `matrix` with our raw count reads, \* `colData`, the independent variables you changed in your experiment (e.g. sex, treatment, tissue). Which we stored in our `metadata` object. \* `design`, The design argument is a formula designated by the tilde symbol `~` and identifies which independent variable(s) you want to investigate. In our data, we have only a single independent variable, i.e. `condition`. Experiments with multifactorial experimental design are a lot more complicated to investigate.
-
-```{r deseq-dataset, warning = FALSE}
-# Create our DESeq2 object
-dds_matrix <- DESeqDataSetFromMatrix(countData = dat_matrix, #matrix 
-                              colData = metadata, #metadata file
-                              design = ~condition)
-# Lets look at the object we created
-dds_matrix
+```{r}
+plot_and_save_PCA <- function(rld, group, output_path) {
+  PCA_plot <- plotPCA(rld, intgroup = group) + theme_bw()
+  ggsave(output_path, plot = PCA_plot, width = 10, height = 10)
+  PCA_plot
+}
 ```
 
-In a DESeq2 data set, the design variables are stored as a **factor** (a data type in R), which by default are organized alphabetically (Factors are important ways to categorize and store data in R). Without further information, DESeq2 will use the condition that comes **first** alphabetically as reference or the control. If you were using `"treated"` and `"untreated"`, for example, DESeq2 would incorrectly assume that the `"treated"` samples are the **reference**. To prevent any confusion, we can set the name used as reference explicitly with the argument `ref` inside the `relevel()` function.
+### 5.1 By technical replicate
 
-```{r set-controls}
-# Set control condition using the relevel function, with 1 hour as the 'reference' level
-dds_matrix$condition <- relevel(dds_matrix$condition, ref = "1_hour")
-
-# Check the levels of dds_matrix$condition
-levels(dds_matrix$condition)
-```
-
-Now that the reference level has been set, we can run DESeq2 on the dataset.
-
-```{r deseq2, message = FALSE, warning = FALSE}
-dds <- DESeq(dds_matrix)
-```
-
-It's also a good idea to save your DESeqDataSet object so you don't have to redo this analysis if you want to re-explore your data. You can do this by saving the `dds` object into a `.rds` file, which is just a binary R file.
-
-```{r saveRDS}
-saveRDS(dds, "dds.rds")
-```
-
-------------------------------------------------------------------------
-
-## Sanity Checks and Quality Assessment: Sample Clustering
-
-Because the distribution of RNA Seq data is highly skewed, with a few highly expressed genes and many lowly expressed genes, it is often necessary to transform our data to visualize clustering (the purpose of this is to uncouple the variance of our data from the mean which violates assumptions of many downstream statistical tests). DESeq2 comes with the function `rlog()`, which log-transforms your count data (similarly, the `vst` function also transforms our data in a "log-like" fashion and is what I usually use for downstream clustering or visualization). After transformation, we can use PCA to identify which samples are more similar and if they group by one or more of the independent variables (in our case, we have only a single variable that can take "control" or "treated").
-
-```{r pca}
+```{r}
 # Perform log transformation on our count data
-rld <- rlog(dds)
+rep_rld <- vst(rep_dds)
 
-# Generate a PCA plot with DESeq2's plotPCA function
-plotPCA(rld, intgroup = "condition") + coord_cartesian() 
+plot_and_save_PCA(rep_rld, "dpi",
+                  "../visualizations/DESeq2/replicates/pca_dpi.png")
+plot_and_save_PCA(rep_rld, "infect",
+                  "../visualizations/DESeq2/replicates/pca_infect.png")
+plot_and_save_PCA(rep_rld, "sex",
+                  "../visualizations/DESeq2/replicates/pca_sex.png")
+plot_and_save_PCA(rep_rld, c("dpi", "infect"),
+                  "../visualizations/DESeq2/replicates/pca_dpi_infect.png")
+plot_and_save_PCA(rep_rld, c("dpi", "sex"),
+                  "../visualizations/DESeq2/replicates/pca_dpi_sex.png")
+plot_and_save_PCA(rep_rld, c("infect", "sex"),
+                  "../visualizations/DESeq2/replicates/pca_infect_sex.png")
+plot_and_save_PCA(rep_rld, c("dpi", "infect", "sex"),
+                  "../visualizations/DESeq2/replicates/pca_dpi_infect_sex.png")
+plot_and_save_PCA(rep_rld, "sname",
+                  "../visualizations/DESeq2/replicates/pca_sample.png")
 ```
 
-A distance matrix is another way to examine how samples cluster. The code chunk below calculates distances between each sample and then maps a colour palette (defined with `colorRampPalette`) onto it so that more similar samples display darker colours.
-
-```{r distance-matrix}
-# Calculate distances between samples in our log-transformed data
-sample_dists <- dist(t(assay(rld)))
-
-# Convert the output to a matrix
-sample_dist_matrix <- as.matrix(sample_dists)
-
-# Remove the column names of our matrix
-colnames(sample_dist_matrix) <- NULL
-
-# Set the colour palette for our heatmap
-colours <- colorRampPalette(rev(brewer.pal(9, "Blues")))(255)
-
-# Generate a heatmap using the pheatmap package
-pheatmap(sample_dist_matrix,
-         clustering_distance_rows = sample_dists,
-         clustering_distance_cols = sample_dists, 
-         col = colours)
-```
-
-We see that the samples cluster together by condition and this is what we would expect! If the samples don't cluster together like you would expect them to, check for batch effects.
-
-------------------------------------------------------------------------
-
-## Extracting data from our DESeqDataSet object
-
-Since our samples cluster according to the independent variable, we can move forward with our analysis. To examine our results, we can save them to our global environment. DESeq2 calculates results for all combinations of levels in your experimental design (pairwise comparisons for all levels). The `resultsNames()` function tells us the name of each result that DESeq2 has calculated, so we can choose which one to look at by specifying "name = " in `results()`. The `results()` function will output a matrix of all genes, including those with similar or differential expression between the two conditions.
-
-```{r generate-result-table}
-# Names of the results that DESeq2 calculated
-resultsNames(dds)
-
-# Now we will extract the results for our comparison between the 12h timepoint and the 1h timepoint
-res <- results(dds, name = "condition_12_hour_vs_1_hour") %>% as.data.frame() # we save it as a dataframe for easy manipulation with dplyr 
-head(res)
-```
-
-**Note:** If you have multiple comparisons in your data (e.g. 1h, 6h, 12h), you can extract specific comparisons using the `results()` function combined with the `contrast =` argument. The contrast argument accepts a vector of length 3 where the first item is the factor/comparison, the second is the numerator (treatment), and the third is the denominator (control). Both the numerator and denominator must be levels of the factor you're investigating. For example, if you wanted to extract a matrix comparing gene expression at 12h compared to 6h, you could use the following code:
-
-```{r generate-results-table_contrast, eval = FALSE}
-results(dds, contrast = c("condition", "12h", "6h"))
-```
-
-------------------------------------------------------------------------
-
-## Data manipulation and "wrangling" with `dplyr`
-
-Let's start by checking taking a *glimpse* of our data. The `glimpse()` function outputs a short summary of your dataframe including the number of rows, columns, and each column. Pay attention to the row number, we will be keeping track of how many observation we filter out at each step!
+### 5.2 By biological sample
 
 ```{r}
-glimpse(res)
+# Perform log transformation on our count data
+sam_rld <- vst(sam_dds)
+
+plot_and_save_PCA(sam_rld, "dpi",
+                  "../visualizations/DESeq2/samples/pca_dpi.png")
+plot_and_save_PCA(sam_rld, "infect",
+                  "../visualizations/DESeq2/samples/pca_infect.png")
+plot_and_save_PCA(sam_rld, "sex",
+                  "../visualizations/DESeq2/samples/pca_sex.png")
+plot_and_save_PCA(sam_rld, c("dpi", "infect"),
+                  "../visualizations/DESeq2/samples/pca_dpi_infect.png")
+plot_and_save_PCA(sam_rld, c("dpi", "sex"),
+                  "../visualizations/DESeq2/samples/pca_dpi_sex.png")
+plot_and_save_PCA(sam_rld, c("infect", "sex"),
+                  "../visualizations/DESeq2/samples/pca_infect_sex.png")
+plot_and_save_PCA(sam_rld, c("dpi", "infect", "sex"),
+                  "../visualizations/DESeq2/samples/pca_dpi_infect_sex.png")
 ```
 
-Let's view our results!
+## 6. Generate & Save Euclidean Distance Heatmaps
+
+### 6.0 Define Helper Function
 
 ```{r}
-view(res)
+plot_and_save_heatmap <- function(rld, names_col, output_path) {
+  dists <- dist(t(assay(rld)))
+  dist_matrix <- as.matrix(dists)
+  colnames(dist_matrix) <- NULL
+  colours <- colorRampPalette(rev(brewer.pal(9, "Blues")))(255)
+  heatmap <- pheatmap(dist_matrix,
+                      clustering_distance_rows = dists,
+                      clustering_distance_cols = dists, 
+                      col = colours,
+                      labels_row = rld@colData@listData[[names_col]])
+  ggsave(output_path, plot = heatmap, width = 12, height = 12)
+}
 ```
 
-You see that some column have "NA" values, this can happen for the following reasons: \* If within a row, all samples have zero counts, the baseMean column will be zero, and the log2 fold change estimates, p value and adjusted p-value will all be set to NA.
-
-- If a row contains a sample with an extreme count outlier then the p value and adjusted p-value will be set to NA. These outlier counts are detected by Cook's distance.
-
-- If a row is filtered by automatic independent filtering, for having a low mean normalized count, then only the adjusted p-value will be set to NA.
-
-<br></br>
-
-Lets use dplyr package to get rid of the rows with the NA values, as they have biased or not useful information. We will use the dplyr `drop_na()` function to filter out any row with an NA value
+### 6.1 By technical replicate
 
 ```{r}
-res_no_NA <- res %>% drop_na()
-
-# How many rows did we filter out!? --> about 2200.
-glimpse(res_no_NA) 
+plot_and_save_heatmap(rep_rld, "sname",
+                      "../visualizations/DESeq2/replicates/euclid_heatmap.png")
 ```
 
-Since we are only interested in differentially expressed genes, we can use `dplyr` functions to keep results with an adjusted *p*-value \< 0.05. Lets use the `filter()` function.
+### 6.2 By biological sample
 
 ```{r}
-res_filtered <- res_no_NA %>% 
-  filter(padj <= 0.05)
-
-# How many rows did we filter out!? --> 5682 compared to no NA data frame.
-glimpse(res_filtered)
+plot_and_save_heatmap(sam_rld, "readable_name",
+                      "../visualizations/DESeq2/samples/euclid_heatmap.png")
 ```
 
-Generally, a gene that has **2X** higher/lower expression is considered 'biologically relevant'. We can also filter the data to pin-point these genes:
+## 7. Further Analysis of Differentially Expressed Genes
+
+### 7.1 By technical replicate
 
 ```{r}
-res_filtered_final <- res_filtered %>% 
-  filter(abs(log2FoldChange) >= 1) %>% # the '|' stand for OR here!
-  rownames_to_column("gene_id") # Convert the rownames into a column so they can be saved in your CSV file
+# names of the results that DESeq2 calculated
+rep_res_names <- resultsNames(rep_dds)
+rep_interaction_term <- rep_res_names[4]
 
-head(res_filtered_final)
+# Get results for interaction term
+rep_res <- results(rep_dds, name = rep_interaction_term) %>% as.data.frame()
+
+# Getting rid of NA values
+rep_res_no_NA <- rep_res %>% drop_na()
+
+# Filtering for adjusted p-values <= 0.05
+rep_res_filt <- rep_res_no_NA %>% filter(padj <= 0.05)
+
+# Pull genes with more than 2x higher/lower expression
+rep_res_final <- rep_res_filt %>% filter(abs(log2FoldChange) >= 1)
+
+# top 50 most up-regulated differentially expressed genes
+rep_top_upreg <- rep_res_final %>%
+  filter(log2FoldChange >= 1) %>%
+  arrange(desc(log2FoldChange)) %>%
+  head(n = 50)
+
+# Bottom 50 most down-regulated differentially expressed genes
+rep_bot_downreg <- rep_res_final %>%
+  filter(log2FoldChange <= -1) %>%
+  arrange(log2FoldChange) %>%
+  head(n = 50)
+
+# Write Results to file
+write_tsv(rep_res_final %>% rownames_to_column(var = "gene_id"),
+          file = "../data/DESeq2/rep_all_diff_expressed.tsv")
+write_tsv(rep_top_upreg %>% rownames_to_column(var = "gene_id"),
+          file = "../data/DESeq2/rep_top50_upreg.tsv")
+write_tsv(rep_bot_downreg %>% rownames_to_column(var = "gene_id"),
+          file = "../data/DESeq2/rep_bot50_downreg.tsv")
 ```
 
-**NOTE** you could have used `%>%` to do all of these filtering steps into one line. Give this a try!!
-
-`dplyr` is also useful to explore your data. Say we wanted to see the top 10 genes that were the most differentially expressed. We can use the `arrange()` function to achieve this.
+### 7.2 By biological sample
 
 ```{r}
-# Top 10 upregulated genes (most positive log2FoldChange)
-top10_genes <- res_filtered_final %>%
-  arrange(desc(log2FoldChange)) %>% # NOTE that we use the desc() function to organize the column in descending order
+# names of the results that DESeq2 calculated
+sam_res_names <- resultsNames(sam_dds)
+sam_interaction_term <- sam_res_names[4]
+
+# Get results for interaction term
+sam_res <- results(sam_dds, name = sam_interaction_term) %>% as.data.frame()
+
+# Getting rid of NA values
+sam_res_no_NA <- sam_res %>% drop_na()
+
+# Filtering for adjusted p-values <= 0.05
+sam_res_filt <- sam_res_no_NA %>% filter(padj <= 0.05)
+
+# Pull genes with more than 2x higher/lower expression
+sam_res_final <- sam_res_filt %>% filter(abs(log2FoldChange) >= 1)
+
+# top 50 most up-regulated differentially expressed genes
+sam_top_upreg <- sam_res_final %>%
+  filter(log2FoldChange >= 1) %>%
+  arrange(desc(log2FoldChange)) %>%
+  head(n = 50)
+
+# Bottom 50 most down-regulated differentially expressed genes
+sam_bot_downreg <- sam_res_final %>%
+  filter(log2FoldChange <= -1) %>%
+  arrange(log2FoldChange) %>%
+  head(n = 50)
+
+# Write Results to file
+write_tsv(sam_res_final %>% rownames_to_column(var = "gene_id"),
+          file = "../data/DESeq2/sam_all_diff_expressed.tsv")
+write_tsv(sam_top_upreg %>% rownames_to_column(var = "gene_id"),
+          file = "../data/DESeq2/sam_top50_upreg.tsv")
+write_tsv(sam_bot_downreg %>% rownames_to_column(var = "gene_id"),
+          file = "../data/DESeq2/sam_bot50_downreg.tsv")
+```
+
+## 8. Generate & Save Downstream Figures
+
+At this point in the analysis, we have evaluated that the results by technical replicate and by biological sample are sane and adequately consistent. Hence, we continue with generating downstream figures only for the results by biological samples as that is the primary method by which we intend to analyze/interpret our results.
+
+### 8.0 Prepare Data For Plotting
+
+```{r}
+sam_res_plotting <- sam_res_final %>%
+  rownames_to_column(var = "gene_id")
+
+# Top 10 genes with the lowest p-values
+top_genes <- sam_res_plotting %>%
+  arrange(padj) %>%
+  head(n = 10) %>%
+  dplyr::select(gene_id) %>%
+  pull()
+
+# Add all fields we may want to use for generating plots
+sam_res_plotting <- sam_res_plotting %>%
+  mutate(reg_label = case_when(padj < 0.05 & log2FoldChange >= 1 ~ "Up-regulated",
+                               padj < 0.05 & log2FoldChange <= -1 ~ "Down-regulated",
+                               TRUE ~ "Non-significant")) %>%
+  mutate(annotation = case_when(gene_id %in% top_genes ~ "GOI", TRUE ~ "normal")) %>%
+  mutate(l2fc_bin = case_when(abs(log2FoldChange) >= 5 ~ "≥5",
+                              abs(log2FoldChange) >= 4 ~ "4",
+                              abs(log2FoldChange) >= 3 ~ "3",
+                              abs(log2FoldChange) >= 2 ~ "2",
+                              abs(log2FoldChange) >= 1 ~ "1",
+                              TRUE ~ "<1"))
+
+sam_res_plotting$l2fc_bin <- factor(sam_res_plotting$l2fc_bin,
+                                    levels = c("<1","1","2","3","4", "≥5"))
+```
+
+### 8.1 Summary Volcano Plot
+
+```{r}
+volcano_plot <- sam_res_plotting %>%
+  ggplot(aes(x = log2FoldChange, y = -log10(padj), colour = reg_label)) +
+  geom_point(alpha = 0.6, size = 1.5) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "#333333") +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "#333333") +
+  scale_color_manual(values = c("Down-regulated" = "#3B82F6",
+                                "Non-significant" = "#333333",
+                                "Up-regulated"= "#EF4444")) +
+  labs(x = expression(log[2]("Fold Change")),
+       y = expression(-log[10]("Adjusted p-value")),
+       color = "") +
+  theme_classic() +
+  theme(legend.position = "bottom")
+
+ggsave("../visualizations/DESeq2/samples/summary_volcano.png",
+       plot = volcano_plot, width = 10, height = 6)
+
+volcano_plot
+```
+
+### 8.2 Top Genes Labelled Volcano Plot
+
+```{r}
+volcano_plot_labelled <- sam_res_plotting %>%
+  ggplot(aes(x = log2FoldChange, y = -log10(padj), color = annotation)) + 
+  geom_point() +
+  scale_color_manual(values = c("red", "grey80")) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", colour = "grey60") +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", colour = "grey60") +
+  geom_text_repel(data = filter(sam_res_plotting, annotation == "GOI"),
+                  aes(label = gene_id),
+                  colour = "red",
+                  size = 3.25,
+                  max.overlaps = Inf,
+                  min.segment.length = 0) +
+  labs(x = expression(log[2]("Fold Change")),
+       y = expression(-log[10]("Adjusted p-value")),
+       color = "Differential Expression") +
+  theme_classic() +
+  theme(legend.position = "none")
+
+ggsave("../visualizations/DESeq2/samples/labelled_volcano.png",
+       plot = volcano_plot_labelled, width = 10, height = 6)
+
+volcano_plot_labelled
+```
+
+### 8.3 Gene Count Bar Plot by Log2FoldChange Bins & Regulation Direction
+
+```{r}
+gene_count_plot <- sam_res_plotting %>%
+  ggplot(aes(x=l2fc_bin)) +
+  geom_bar(color="black", aes(fill= reg_label)) +
+  geom_text(stat = "count",
+            aes(label = after_stat(count)),
+            color = "black",
+            size = 6,
+            vjust = -0.4) +
+  labs(x = expression(log[2]("Fold Change")),
+       y = "Number of Genes",
+       fill = "") +
+  scale_fill_manual(values = c("#3B82F6", "#EF4444")) +
+  theme_classic() +
+  theme(legend.position = "bottom")
+
+ggsave("../visualizations/DESeq2/samples/gene_counts_bar.png",
+       plot = gene_count_plot, width = 10, height = 10)
+
+gene_count_plot
+```
+
+### 8.4 Top & Bottom 10 Genes Log2FoldChange Bar Plots
+
+#### 8.4.1 Top Genes Alone
+
+```{r}
+top10_genes <- sam_res_plotting %>%
+  arrange(desc(log2FoldChange)) %>% 
   head(n = 10)
-top10_genes
 
-# Top 10 downregulated genes (most negative log2FoldChange)
-bot10_genes <- res_filtered_final %>%
-  arrange(log2FoldChange) %>% # NOTE since we don't use desc(), the column is organized in ascending order
-  head(n = 10)
-bot10_genes
+top_order <- top10_genes %>% 
+  dplyr::select(gene_id) %>% 
+  pull()
+
+top10_genes_plot <- top10_genes %>%
+  ggplot(aes(x = gene_id, y = log2FoldChange)) +
+  geom_col(fill = "grey60") +
+  geom_errorbar(aes(ymin= log2FoldChange - lfcSE, ymax = log2FoldChange + lfcSE),
+                width = 0.4) +
+  scale_x_discrete(limits = rev(top_order)) +
+  coord_flip() +
+  labs(x = "Gene ID",
+       y = expression(log[2]("Fold Change"))) +
+  theme_classic()
+
+ggsave("../visualizations/DESeq2/samples/top_genes_bar.png",
+       plot = top10_genes_plot, width = 10, height = 10)
+
+top10_genes_plot
 ```
 
-Finally, lets save our filtered results into a file that we can open up with Excel. We will use the `write_csv()` function
+#### 8.4.2 Bottom Genes Alone
 
 ```{r}
-write_csv(res_filtered_final, "chlamy_results.csv")
+bot10_genes <- sam_res_plotting %>%
+  arrange(log2FoldChange) %>% 
+  head(n = 10)
+
+bot_order <- bot10_genes %>% 
+  dplyr::select(gene_id) %>% 
+  pull()
+
+bot10_genes_plot <- bot10_genes %>%
+  ggplot(aes(x = gene_id, y = log2FoldChange)) +
+  geom_col(fill = "grey60") +
+  geom_errorbar(aes(ymin= log2FoldChange - lfcSE, ymax = log2FoldChange + lfcSE),
+                width = 0.4) +
+  scale_x_discrete(limits = bot_order, position = "top") +
+  coord_flip() +
+  labs(x = "Gene ID",
+       y = expression(log[2]("Fold Change"))) +
+  theme_classic()
+
+ggsave("../visualizations/DESeq2/samples/bot_genes_bar.png",
+       plot = bot10_genes_plot, width = 10, height = 10)
+
+bot10_genes_plot
 ```
 
-**NOTE:** You need to include the `rownames_to_columns("gene_id")` line of code when creating the `res_filtered_final` object so that the rownames are stored in your CSV file!
+#### 8.4.3 Top & Bottom Genes Together
 
-------------------------------------------------------------------------
+```{r}
+joined_top10 <- bind_rows(top10_genes, bot10_genes) %>%
+  mutate(reg_label = if_else(log2FoldChange > 0, "Up-regulated", "Down-regulated")) %>%
+  arrange(log2FoldChange)
 
-## Additional resources
+joined_order <- joined_top10 %>% 
+  dplyr::select(gene_id) %>% 
+  pull()
 
-If you want more information about DESeq2, you can access the package vignette by running:
+joined_top10_genes_plot <- joined_top10 %>%
+  ggplot(aes(x = gene_id, y = log2FoldChange, fill = reg_label)) +
+  geom_col(color = "black", width = 0.8) +
+  geom_errorbar(aes(ymin = log2FoldChange-lfcSE, ymax = log2FoldChange+lfcSE), width = 0.4) +
+  scale_x_discrete(limits = joined_order) +
+  coord_flip()+ 
+  labs(y = expression(log[2]("Fold Change")),
+       x = "Gene ID",
+       fill = "") +
+  geom_hline(yintercept = 0) +
+  theme_light() +
+  scale_y_continuous(limits = c(-14,14), breaks = seq(-14, 14, 2), expand = c(0,0)) +
+  scale_fill_manual(values = c("#3B82F6", "#EF4444")) +
+  theme_classic() +
+  theme(legend.position = "bottom")
 
-```{r vignette, eval = FALSE}
-vignette("DESeq2")
+ggsave("../visualizations/DESeq2/samples/joined_top_genes_bar.png",
+       plot = joined_top10_genes_plot, width = 10, height = 10)
+
+joined_top10_genes_plot
 ```
 
-Original paper: [An RNA-Seq atlas of gene expression in mouse and rat normal tissues](https://www.nature.com/articles/sdata2017185)
+### 8.5 Z-Score Heatmap
 
-[Data source from original paper](https://www.ebi.ac.uk/arrayexpress/experiments/E-MTAB-6081/samples/)
+```{r}
+# Generate Z-Scores
+vsd <- vst(sam_dds)
+readable_names <- vsd@colData@listData[["readable_name"]]
 
-[STAR documentation](https://github.com/alexdobin/STAR/blob/master/doc/STARmanual.pdf)
+vsd <- assay(vsd)
+Z <- t(scale(t(vsd)))
 
-[DESeq2 vignette](https://www.bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html)
+# Extract row indices of the rows with the highest variation
+top_var_genes <- rowVars(vsd) %>% 
+  order(decreasing = TRUE) %>% 
+  head(20) 
+
+# Subset the Z-score matrix for only the row we're interested in
+Z_top_genes <- Z[top_var_genes,] 
+
+# Plot
+colours <- colorRampPalette(rev(brewer.pal(9, "RdBu")))(255)
+
+z_score_heatmap <- pheatmap(Z_top_genes,
+                            col = colours,
+                            angle_col = 45,
+                            fontsize_col = 10,
+                            fontsize_row = 10,
+                            labels_col = readable_names)
+
+ggsave("../visualizations/DESeq2/samples/z_score_heatmap.png",
+       plot = z_score_heatmap, width = 12, height = 8)
+```

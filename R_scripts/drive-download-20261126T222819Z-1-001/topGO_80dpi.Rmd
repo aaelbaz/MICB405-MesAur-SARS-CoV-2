@@ -1,0 +1,252 @@
+---
+title: "topGO_80dpi_cov_vs_mock"
+output: html_document
+author: "Alex Elbaz" "Zoey Qiu"
+date: "2026-11-05"
+editor_options: 
+  chunk_output_type: console
+---
+
+## Preamble
+
+This script runs GO Enrichment using `topGo` on our `DESeq2` analysis results. This script is adapted from the Lecture 7.3 script provided by MICB 405 at the University of British Columbia Vancouver (2026W1).
+
+## 1. Load Libraries
+
+```{r}
+suppressPackageStartupMessages(library(topGO))
+suppressPackageStartupMessages(library(tidyverse))
+```
+
+## 2. Generate Gene Universe
+
+```{r}
+# Create Mapping Table
+geneID2GO <- readMappings("go_term_tables/mesaur_GOIDs.tsv")
+
+# Generate `topGO` Gene Universe
+geneUniverse <- names(geneID2GO)
+
+```
+
+## 3. Load Lists of Differentially Expressed Genes
+
+```{r}
+# Load raw gene lists
+results <-read.csv("genes/80 dpi_ Mock vs Cov/results_filtered.csv")
+up_gene <- results %>%
+  filter(log2FoldChange >= 1)
+down_gene <- results %>%
+  filter(log2FoldChange <= -1)
+
+# Convert/Coerce to characters
+upregulated_gene_names <- as.character(up_gene$X)
+downregulated_gene_names <- as.character(down_gene$X)
+
+# Convert to factors
+up_gene_list <- factor(as.integer(geneUniverse %in% upregulated_gene_names))
+down_gene_list <- factor(as.integer(geneUniverse %in% downregulated_gene_names))
+names(up_gene_list) <- geneUniverse
+names(down_gene_list) <- geneUniverse
+```
+
+## 4. Build topGOdata Objects
+
+```{r}
+# up-regulated genes
+up_GO_data <- new("topGOdata",
+                  description = "mesaur_80dpi_mock_vs_cov_up",
+                  ontology = "BP",
+                  allGenes = up_gene_list,
+                  annot = annFUN.gene2GO,
+                  gene2GO = geneID2GO)
+
+# down-regulated genes
+down_GO_data <- new("topGOdata",
+                    description = "mesaur_80dpi_mock_vs_cov_down",
+                    ontology = "BP",
+                    allGenes = down_gene_list,
+                    annot = annFUN.gene2GO,
+                    gene2GO = geneID2GO)
+
+```
+
+## 5. Run Statistical Tests on topGOdata Objects
+
+```{r}
+up_result <- runTest(up_GO_data,
+                     algorithm = "weight01",
+                     statistic = "fisher")
+
+down_result <- runTest(down_GO_data,
+                       algorithm = "weight01",
+                       statistic = "fisher")
+```
+
+## 6. Extract a summary of upregulated and downregulated results
+
+```{r}
+up_GO <- GenTable(up_GO_data,
+                       weight01 = up_result,
+                       orderBy = "weight01",
+                       ranksOf = "weight01",
+                       topNodes = 50)
+
+down_GO <- GenTable(down_GO_data,
+                         weight01 = down_result,
+                         orderBy = "weight01",
+                         ranksOf = "weight01",
+                         topNodes = 50)
+```
+
+# 7. Visualizing upregulated topGO Analyses
+ 
+```{r}
+up_GO_filtered <- up_GO %>%
+  mutate(GeneRatio = Significant/Annotated, 
+         weight01 = as.numeric(weight01)) %>%
+  filter(weight01 <= 0.05) %>%
+  head(n = 20)
+
+up_GO_filtered_arranged <- up_GO_filtered %>% 
+  arrange(GeneRatio) %>%
+  mutate(Term = factor(Term))
+
+order_term <- up_GO_filtered_arranged %>% 
+  pull(Term)
+
+up_GO_filtered_arranged %>% 
+  ggplot(aes(x= Term,y = GeneRatio, colour = weight01)) +
+  geom_col(width = 0.05) +
+  geom_point(aes(size = Significant)) +
+  coord_flip() +
+  scale_x_discrete(limits = order_term) + 
+  scale_colour_gradient(low = "red", high = "blue")+
+  theme_light() +
+  labs(x = "GO Term (Biological Process)", 
+       y = "Enrichment Ratio", 
+       color = "weight01 p-value", 
+       size = "Number of Significant Genes", 
+       title = "GO enrichment of upregulated genes in Cov vs Mock at 80 dpi") + 
+  theme(panel.border = element_rect(color = "black"), panel.grid = element_line(colour = "grey96")) +
+  scale_y_continuous(limits = c(0,1), 
+                     breaks = seq(0, 1, 0.25), 
+                     expand = c(0, 0.05)) 
+
+```
+
+# 8. Visualizing downregulated topGO Analyses
+
+```{r}
+down_GO_filtered <- down_GO %>%
+  mutate(GeneRatio = Significant/Annotated, 
+         weight01 = as.numeric(weight01)) %>%
+  filter(weight01 <= 0.05) %>%
+  head(n = 20)
+
+down_GO_filtered_arranged <- down_GO_filtered %>% 
+  arrange(GeneRatio) %>%
+  mutate(Term = factor(Term))
+
+order_term <- down_GO_filtered_arranged %>% 
+  pull(Term)
+
+down_GO_filtered_arranged %>% 
+  ggplot(aes(x= Term,y = GeneRatio, colour = weight01)) +
+  geom_col(width = 0.05) +
+  geom_point(aes(size = Significant)) +
+  coord_flip() +
+  scale_x_discrete(limits = order_term) + 
+  scale_colour_gradient(low = "red", high = "blue")+
+  theme_light() +
+  labs(x = "GO Term (Biological Process)", 
+       y = "Enrichment Ratio", 
+       color = "weight01 p-value", 
+       size = "Number of Significant Genes", 
+       title = "GO enrichment of downregulated genes in Cov vs Mock at 80 dpi") + 
+  theme(panel.border = element_rect(color = "black"), panel.grid = element_line(colour = "grey96")) +
+  scale_y_continuous(limits = c(0,1), 
+                     breaks = seq(0, 1, 0.25), 
+                     expand = c(0, 0.05)) 
+
+```
+
+ 
+
+## 9. Visualizing upregulated and downregulated topGO Analyses
+
+```{r plot-updown, warning=FALSE, message = FALSE}
+up_GO <- up_GO %>% 
+  mutate(up_down = "UP")
+
+down_GO <- down_GO %>% 
+  mutate(up_down = "DOWN")
+
+joined_GO_filtered_arranged <- bind_rows(up_GO, down_GO) %>%
+  mutate(GeneRatio = Significant/Annotated, weight01 = as.numeric(weight01)) %>%
+  filter(weight01 <= 0.05) %>%
+  arrange(desc(GeneRatio)) %>%
+  mutate(Term = factor(Term)) %>%
+  head(n = 40)
+
+order_term_joined <- joined_GO_filtered_arranged %>% 
+  pull(Term)
+
+joined_GO_filtered_arranged %>% 
+  ggplot(aes(x= Term, y = GeneRatio, color = weight01)) +
+  geom_point(aes(size= Significant)) +
+  coord_flip() +
+  scale_x_discrete(limits = order_term_joined) +
+  scale_color_gradient(low = "red", high = "blue") +
+  theme_light() +
+  labs(x = "GO Term Description", 
+       y = "Enrichment Ratio", 
+       color = "weight01 p-value", 
+       size = "Number of Significant Genes", 
+       title = "GO enrichment of upregulated and downregulated genes in Cov vs Mock at 80 dpi") +
+  theme(panel.border = element_rect(color = "black"), 
+        panel.grid = element_line(colour = "grey96"), 
+        strip.background = element_rect(colour = "black")) +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2), expand = c(0, 0)) +
+  facet_grid(.~ up_down)
+
+```
+
+## 10.Extract Genes Associated with Enriched GO Terms
+note: did not run for 80dpi yet
+
+```{r message=FALSE}
+
+mesaur_GOIDs <- read_tsv("go_term_tables/mesaur_GOIDs.tsv", col_names = c("gene_id", "GO_id"))
+glimpse(mesaur_GOIDs)
+
+# choose GO ID from  data set
+GO_ID <- down_GO_filtered_arranged$GO.ID[5]
+#OR: GO_ID <- up_GO_filtered_arranged$GO.ID[]
+
+# Select rows that contain our GO term of interest
+filtered_GO_ID <- mesaur_GOIDs %>%
+  filter(grepl(pattern = GO_ID, GO_id))
+glimpse(filtered_GO_ID)
+
+# Vector of gene IDs to select
+gene_id_vector <- filtered_GO_ID %>% 
+  pull(gene_id)
+
+# Filter the data set
+dat_GO_filtered <- down_gene %>%
+  filter(X %in% gene_id_vector) %>%
+  filter(padj <= 0.05 & log2FoldChange <= -1)
+
+glimpse(dat_GO_filtered)
+
+dat_GO_filtered %>% 
+  ggplot(aes(x = X, y = log2FoldChange)) +
+  geom_errorbar(aes(ymin = log2FoldChange - lfcSE, ymax =log2FoldChange + lfcSE), width = 0.4) +
+  geom_bar(stat = "identity", color = "black", width = 0.8) +
+  coord_flip()+ 
+  labs(y = "log2(FC)", x= "Gene ID") +
+  geom_hline(yintercept = 0) +
+  theme_light() +
+  theme(panel.border = element_rect(color = "black"), panel.grid = element_line(colour = "white"))
+```

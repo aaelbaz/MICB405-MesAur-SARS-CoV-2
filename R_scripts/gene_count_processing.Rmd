@@ -1,0 +1,195 @@
+---
+title: "gene_count_processing"
+output: html_document
+author: "Alex Elbaz"
+date: "2026-11-26"
+---
+
+## Preamble
+
+The purpose of this script is to convert raw gene counts into count matrices with corresponding metadata data frames, usable in downstream applications (e.g., differential gene expression analysis). This includes collapsing gene count data for technical replicates into gene counts for biological samples in accordance with how the original sequencing library was prepared. This script will also generate count matrices and corresponding metadata after removing one technical replicate from each of the 4 days-post-infection (dpi) samples; the rationale for this is discussed within our paper.
+
+## 1. Load Libraries
+
+```{r}
+library(tidyverse)
+library(DESeq2)
+```
+
+## 2. Declare Global Variable
+
+```{r}
+sam_metadata <- data.frame()
+sam_count_matrix <- data.frame()
+
+rep_metadata <- data.frame()
+rep_count_matrix <- data.frame()
+
+removal_list <- c()
+```
+
+## 3. Declare Helper Function
+
+```{r}
+loadData <- function(dpi_dir_path, dpi) {
+  for (dir in dpi_dir_path) {
+    sam_info <- str_split(basename(dir), pattern = "-")[[1]]
+    smeta <- str_split(sam_info[1], pattern = "_")[[1]]
+    sname <- paste(smeta[1], sam_info[2], sep = "-")
+    smeta_row <- c(sname, dpi, smeta[2:length(smeta)])
+    sam_metadata <<- rbind(sam_metadata, smeta_row)
+    
+    rep_files <- list.files(path = dir, pattern = "*.readcounts.out.tab", full.names = TRUE)
+    sam_counts <- data.frame()
+    for (rep in rep_files) {
+      rname <- sub(".readcounts.out.tab", "", basename(rep))
+      if (!(rname %in% removal_list)) {
+        rdata <- read.delim(rep, header = FALSE, skip = 4,
+                            col.names = c("gene_id", "total", "antisense", "sense")) %>%
+          dplyr::select(gene_id, sense) %>%
+          dplyr::rename(!!rname := sense)
+        if (length(sam_counts) == 0) {
+          sam_counts <- rdata
+        } else {
+          sam_counts <- inner_join(sam_counts, rdata, by = "gene_id")
+        }
+        
+        rmeta_row <- c(rname, smeta_row)
+        rep_metadata <<- rbind(rep_metadata, rmeta_row)
+        if (length(rep_count_matrix) == 0) {
+          rep_count_matrix <<- rdata
+        } else {
+          rep_count_matrix <<- inner_join(rep_count_matrix, rdata, by = "gene_id")
+        }
+      }
+    }
+    sam_counts <- sam_counts %>%
+      rowwise(gene_id) %>%
+      summarize(!!sname := sum(c_across(where(is.numeric))))
+    if (length(sam_count_matrix) == 0) {
+      sam_count_matrix <<- sam_counts
+    } else {
+      sam_count_matrix <<- inner_join(sam_count_matrix, sam_counts, by = "gene_id")
+    }
+  }
+  colnames(sam_metadata) <<- c("sname", "dpi", "sex", "infect")
+  colnames(rep_metadata) <<- c("rname", "sname", "dpi", "sex", "infect") 
+}
+```
+
+## 4. Load Gene Counts by Technical Replicate & Collapsed by Sample
+
+```{r}
+dpi4_samples <- list.files(path = "../data/raw_gene_counts/4dpi_observations/",
+                           full.names = TRUE)
+dpi80_samples <- list.files(path = "../data/raw_gene_counts/80dpi_observations/",
+                            full.names = TRUE)
+
+loadData(dpi4_samples, "4")
+loadData(dpi80_samples, "80")
+```
+
+## 5. Write First Results to File
+
+```{r}
+write_tsv(sam_metadata,
+          file = "../data/processed_counts/all_observations/sam_metadata.tsv")
+write_tsv(sam_count_matrix,
+          file = "../data/processed_counts/all_observations/sam_count_matrix.tsv")
+write_tsv(rep_metadata,
+          file = "../data/processed_counts/all_observations/rep_metadata.tsv")
+write_tsv(rep_count_matrix,
+          file = "../data/processed_counts/all_observations/rep_count_matrix.tsv")
+```
+
+## 6. Get Accessions of Technical Replicates to Remove & Verify
+
+### 6.1 Get accessions of all 'run1' technical replicates for 4dpi (those to remove)
+
+```{r}
+metadata_removal_accessions <- read_tsv("../data/datasets_metadata/4dpi/4dpi_arrayexpress_metadata.tsv") %>%
+  dplyr::rename(run_name = "Assay Name") %>%
+  dplyr::rename(rep_accession = "Comment[ENA_RUN]") %>%
+  filter(grepl("run1", run_name)) %>%
+  select(rep_accession) %>%
+  arrange(rep_accession) %>%
+  pull()
+```
+
+### 6.2 Run DESeq2 to get accessions of all observations within the 4dpi outlier cluster (by PCA)
+
+```{r}
+# Coerce count_matrix & metadata into appropriate form & prep for DESeq2
+rep_count_matrix <- rep_count_matrix %>% column_to_rownames(var = "gene_id")
+rep_count_matrix <- as.matrix(rep_count_matrix)
+
+rep_metadata <- rep_metadata %>% column_to_rownames(var = "rname")
+rep_metadata$sname <- as.factor(rep_metadata$sname)
+rep_metadata$dpi <- as.factor(rep_metadata$dpi)
+rep_metadata$sex <- as.factor(rep_metadata$sex)
+rep_metadata$infect <- as.factor(rep_metadata$infect)
+
+# Create DESeq2 object
+rep_dds_matrix <- DESeqDataSetFromMatrix(countData = rep_count_matrix,
+                                         colData = rep_metadata,
+                                         design = ~infect*dpi)
+
+# Set control condition using the relevel function.
+rep_dds_matrix$dpi <- relevel(rep_dds_matrix$dpi, ref = "4")
+rep_dds_matrix$infect <- relevel(rep_dds_matrix$infect, ref = "mock")
+rep_dds_matrix$sex <- relevel(rep_dds_matrix$sex, ref = "M")
+
+# Run DESeq2
+rep_dds <- DESeq(rep_dds_matrix)
+
+# Perform log transformation on our count data
+rep_rld <- vst(rep_dds)
+
+# Generate PCA plot (sanity check)
+plotPCA(rep_rld, intgroup = "dpi")
+
+# Extract outlier cluster accessions
+pca_removal_accessions <- plotPCA(rep_rld, intgroup = "dpi", returnData = TRUE) %>%
+  filter(PC1 > 50) %>%
+  select(name) %>%
+  arrange(name) %>%
+  pull()
+```
+
+### 6.3 Verify that the replicates to remove are as expected and add appropriate accessions to the removal list
+
+```{r}
+identical(metadata_removal_accessions, pca_removal_accessions)
+
+removal_list <- metadata_removal_accessions
+```
+
+## 7. Load Gene Counts by (Subsetted) Technical Replicate & Collapsed by Sample
+
+The helper function filters out accessions in `removal_list` . Admittedly, there is a more efficient way to do this by just filtering the existing count matrix and metadata and only replacing the columns that we need to, but it is not that much extra computation to just redo it from scratch in this case.
+
+```{r}
+# Clear global variables
+sam_metadata <- data.frame()
+sam_count_matrix <- data.frame()
+
+rep_metadata <- data.frame()
+rep_count_matrix <- data.frame()
+
+# Rerun the data load
+loadData(dpi4_samples, "4")
+loadData(dpi80_samples, "80")
+```
+
+## 8. Write Subsetted Results to File
+
+```{r}
+write_tsv(sam_metadata,
+          file = "../data/processed_counts/subset_observations/sam_metadata.tsv")
+write_tsv(sam_count_matrix,
+          file = "../data/processed_counts/subset_observations/sam_count_matrix.tsv")
+write_tsv(rep_metadata,
+          file = "../data/processed_counts/subset_observations/rep_metadata.tsv")
+write_tsv(rep_count_matrix,
+          file = "../data/processed_counts/subset_observations/rep_count_matrix.tsv")
+```

@@ -1,0 +1,182 @@
+---
+title: "kegg_enrichment"
+output: html_document
+date: "2026-11-27"
+author: "Erjun Shen"
+---
+
+## Preamble
+
+This analysis builds on the prior GO Enrichment by examining KEGG terms instead, acquiring some more specific gene pathway information.
+
+## 1. Load Libraries
+
+```{r}
+library(tidyverse)
+library(clusterProfiler)
+```
+
+## 2. Load KEGG Terms
+
+```{r}
+# Load genes from KEGG for Mesocricetus auratus
+maua_raw <- read_tsv("https://rest.kegg.jp/list/maua",
+                     col_names = c("kegg_id", "type", "location", "desc"),
+                     show_col_types = FALSE)
+
+# Get KEGG ID 
+kegg_map <- maua_raw %>%
+  mutate(entrez_id = str_remove(kegg_id, "^maua:"),
+         sym_part  = if_else(str_detect(desc, ";"),
+                             str_extract(desc, "^[^;]+"),
+                             paste0("LOC", entrez_id))) %>%
+  separate_longer_delim(sym_part, delim = ", ") %>%
+  mutate(gene_id = str_trim(sym_part)) %>%
+  dplyr::select(gene_id, entrez_id) %>%
+  distinct(gene_id, .keep_all = TRUE)
+```
+
+## 3. Load Data & Pull Significant KEGG Terms
+
+```{r}
+# Load data + bind entrez IDs
+diff_expressed_genes <- read_tsv("../data/DESeq2/sam_all_diff_expressed.tsv") %>%
+  left_join(kegg_map, by = "gene_id") %>%
+  mutate(entrez_id = if_else(is.na(entrez_id) & str_detect(gene_id, "^LOC[0-9]+$"),
+                             str_remove(gene_id, "^LOC"),
+                             entrez_id)) %>%
+  filter(!is.na(entrez_id))
+
+
+# Pull up- and down-regulated gene entrez IDs
+upreg_entrez <- diff_expressed_genes %>%
+  filter(log2FoldChange >= 1, padj < 0.05) %>%
+  pull(entrez_id)
+
+downreg_entrez <- diff_expressed_genes %>%
+  filter(log2FoldChange <= -1, padj < 0.05) %>%
+  pull(entrez_id)
+
+
+# Conduct KEGG enrichment
+kegg_upreg <- enrichKEGG(gene = upreg_entrez,
+                         organism = "maua",
+                         keyType = "ncbi-geneid",
+                         pvalueCutoff = 0.05,
+                         qvalueCutoff = 0.2)
+
+kegg_downreg <- enrichKEGG(gene = downreg_entrez,
+                           organism = "maua",
+                           keyType = "ncbi-geneid",
+                           pvalueCutoff = 0.05,
+                           qvalueCutoff = 0.2)
+
+
+# Save KEGG enrichment data
+write_tsv(as.data.frame(kegg_upreg),
+          "../data/KEGG_enrichment/kegg_upreg.tsv")
+write_tsv(as.data.frame(kegg_downreg),
+          "../data/KEGG_enrichment/kegg_downreg")
+```
+
+## 4. Visualize Significant Up-regulated KEGG Terms
+
+```{r}
+# Get up-regulated KEGG Term data frame
+kegg_upreg_df <- as.data.frame(kegg_upreg) %>%
+  filter(category != "Human Diseases") %>%
+  head(15) %>%
+  mutate(Direction = "UP",
+         GeneRatio_num = Count/DESize,
+         Label = str_wrap(Description, 45))
+
+# Plot
+kegg_upreg_plot <- kegg_upreg_df %>%
+  mutate(Label = fct_reorder(Label, GeneRatio_num)) %>%
+  ggplot(aes(x = GeneRatio_num, y = Label, color = p.adjust, fill = p.adjust)) +
+  geom_col(width = 0.02) +
+  geom_point(aes(size = Count)) +
+  scale_size(range = c(3, 8), breaks = c(12, 16, 20)) +
+  scale_color_gradient(low = "red", high = "blue") +
+  scale_fill_gradient(low = "red", high = "blue", guide = "none") +
+  labs(x = "Gene Ratio",
+       y = "KEGG Term",
+       color = "p-value",
+       size  = "Gene Count") +
+  theme_classic() +
+  theme(panel.border = element_rect(color = "black"),
+        panel.grid = element_line(colour = "grey96"),
+        axis.text.y  = element_text(color = "black", size = 9.5))
+
+kegg_upreg_plot
+
+ggsave("../visualizations/KEGG_enrichment/kegg_upreg_lolipop.png",
+       plot = kegg_upreg_plot, width = 8, height = 8)
+```
+
+## 5. Visualize Significant Down-regulated KEGG Terms
+
+```{r}
+# Get down-regulated KEGG Term data frame
+kegg_downreg_df <- as.data.frame(kegg_downreg) %>%
+  filter(category != "Human Diseases") %>%
+  head(15) %>%
+  mutate(Direction = "DOWN",
+         GeneRatio_num = Count/DESize,
+         Label = str_wrap(Description, 45))
+
+# Plot
+kegg_downreg_plot <- kegg_downreg_df %>%
+  mutate(Label = fct_reorder(Label, GeneRatio_num)) %>%
+  ggplot(aes(x = GeneRatio_num, y = Label, color = p.adjust, fill = p.adjust)) +
+  geom_col(width = 0.05) +
+  geom_point(aes(size = Count)) +
+  scale_size(range = c(3, 8), breaks = c(12, 16, 20)) +
+  scale_color_gradient(low = "red", high = "blue") +
+  scale_fill_gradient(low = "red", high = "blue", guide = "none") +
+  labs(x = "Gene Ratio",
+       y = "KEGG Term",
+       color = "p-value",
+       size  = "Gene Count") +
+  theme_classic() +
+  theme(panel.border = element_rect(color = "black"),
+        panel.grid = element_line(colour = "grey96"),
+        axis.text.y  = element_text(color = "black", size = 9.5))
+
+kegg_downreg_plot
+
+ggsave("../visualizations/KEGG_enrichment/kegg_downreg_lolipop.png",
+       plot = kegg_downreg_plot, width = 8, height = 8)
+```
+
+## 6. Visualize Both Sets of Significant KEGG Terms Together
+
+```{r}
+# Join up- and down-regulated KEGG Terms
+kegg_joined_df <- bind_rows(kegg_downreg_df, kegg_upreg_df) %>%
+  mutate(Direction = factor(Direction, levels = c("DOWN", "UP")),
+         Label = fct_reorder(Label, GeneRatio_num, .fun = max))
+
+# Plot
+kegg_joined_plot <- kegg_joined_df %>%
+  ggplot(aes(x = GeneRatio_num, y = Label, color = p.adjust)) +
+  geom_point(aes(size = Count)) +
+  scale_size(range = c(3, 8)) +
+  scale_color_gradient(low = "red", high = "blue") +
+  facet_grid(. ~ Direction) +
+  labs(x = "Gene Ratio",
+       y = "KEGG Term",
+       color = "p-value",
+       size  = "Gene Count") +
+  theme_classic() +
+  theme(axis.text.y = element_text(color = "black", size = 9),
+    panel.border = element_rect(color = "black"),
+    panel.grid = element_line(colour = "grey96"),
+    strip.background = element_rect(color = "black"),
+    panel.spacing = unit(0.8, "lines"))
+
+kegg_joined_plot
+
+ggsave("../visualizations/KEGG_enrichment/kegg_joined_lolipop.png",
+       plot = kegg_joined_plot, width = 10.5, height = 7.5, dpi = 300)
+```

@@ -2,6 +2,7 @@
 title: "deseq2_analysis"
 output: html_document
 date: "2026-11-26"
+author: "Jessica Wijaya" "Kyle Yeung" "Alex Elbaz"
 ---
 
 ## Preamble

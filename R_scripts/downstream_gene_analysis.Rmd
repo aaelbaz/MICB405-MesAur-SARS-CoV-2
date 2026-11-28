@@ -1,0 +1,129 @@
+---
+title: "downstream_gene_analysis"
+output: html_document
+date: "2026-11-27"
+author: "Erjun Shen"
+---
+
+## Preamble
+
+This script further analyzes identified deferentially expressed genes, taking into account their functions/pathways where identified and the functions/pathways of the equivalent human orthologs where inadequate information exists for the Syrian Golden Hamster gene.
+
+## 1. Load Libraries
+
+```{r}
+library(tidyverse)
+```
+
+## 2. Define Gene Lists
+
+```{r}
+EXCL_OLFACTORY_MUCOSAL <- c("Bpifa1", "Bpifb4", "LOC101823870", "LOC101827556",
+  "LOC121138580", "LOC101843093", "LOC101843357", "LOC121140164", "LOC101826747",
+  "LOC101842056", "LOC101835304", "Umodl1", "LOC101823275", "LOC101842827",
+  "LOC101826429", "Scgb1c1", "Reg3gamma", "Gpx6", "LOC106021050", "Gfy", "Muc5b",
+  "Amelx", "Ambn", "Fetub", "CUNH6orf58", "LOC101843376", "LOC110342735",
+  "LOC106020982", "LOC101842428", "LOC101827565")
+
+EXCL_ERYTHROCYTE <- c("LOC121144049", "LOC121141272", "LOC101833678", "LOC121141276",
+                      "LOC121144051", "Alas2")
+
+EXCL_MISC_UNCHAR <- c("LOC101831512", "CUNH20orf173", "Smim38", "LOC106021361", "LOC121141649",
+                      "LOC101838074", "LOC110339469")
+
+EXCL_UNCHAR_LOC <- c("LOC121139129", "LOC121140554", "LOC106022148", "LOC121140390",
+                     "LOC106021785")
+
+EXCL_GENES <- c(EXCL_OLFACTORY_MUCOSAL, EXCL_ERYTHROCYTE, EXCL_MISC_UNCHAR, EXCL_UNCHAR_LOC)
+```
+
+## 3. Define Helper Function for Evaluating Significance
+
+To evaluate relative importance of a differentially expressed gene taking into account both p-value and effect size (log2FoldChange), we utilize a ranking/scoring metric defined in Xiao *et al.* ([here](https://doi.org/10.1093/bioinformatics/btr671)), the π-value.
+
+```{r}
+rank_by_xiao_pi <- function(input_tsv_path, basemean_min = 15, top_n = 5) {
+  raw_df <- read_tsv(input_tsv_path)
+  
+  clean_df <- as_tibble(raw_df) %>%
+    mutate(xiao_pi_score = abs(log2FoldChange)*(-log10(pmax(padj, 1e-300)))) %>%
+    filter(!gene_id %in% EXCL_GENES,
+           !startsWith(gene_id, "unassigned"),
+           baseMean >= basemean_min)
+  
+  top_up <- clean_df %>%
+    filter(log2FoldChange >= 0) %>%
+    arrange(desc(xiao_pi_score)) %>%
+    head(top_n) %>%
+    mutate(Direction = "Up-regulated", Rank = row_number())
+  
+  top_down <- clean_df %>%
+    filter(log2FoldChange < 0) %>%
+    arrange(desc(xiao_pi_score)) %>%
+    head(top_n) %>%
+    mutate(Direction = "Down-regulated", Rank = row_number())
+  
+  return(bind_rows(top_up, top_down) %>%
+           dplyr::select(gene_id, baseMean, log2FoldChange, lfcSE,
+                         padj, Direction, xiao_pi_score))
+}
+```
+
+## 4. Load Data, Rank by π-value, and Write Updated Data
+
+```{r}
+# Load and rank data
+top5_bot5_pi_score_genes <- rank_by_xiao_pi("../data/DESeq2/sam_all_diff_expressed.tsv",
+                                            basemean_min = 20,
+                                            top_n = 5)
+
+# Write data to file
+write_tsv(top5_bot5_pi_score_genes, "../data/downstream/top5_bot5_pi_score_genes.tsv")
+```
+
+## 5. Generate Summary Bar Plot
+
+```{r}
+
+pi_score_genes_plot_data <- top5_bot5_pi_score_genes %>%
+  mutate(sig_star = case_when(padj < 1e-10 ~ "***",
+                              padj < 1e-4 ~ "**",
+                              padj < 0.05 ~ "*",
+                              TRUE ~ "ns"),
+         bar_label = sprintf("%+.2f %s", log2FoldChange, sig_star)) %>%
+  arrange(log2FoldChange)
+
+order <- pi_score_genes_plot_data %>%
+  dplyr::select(gene_id) %>%
+  pull()
+
+xmax <- max(abs(pi_score_genes_plot_data$log2FoldChange) + pi_score_genes_plot_data$lfcSE)*1.38
+
+pi_score_genes_plot <- pi_score_genes_plot_data %>%
+  ggplot(aes(x = gene_id, y = log2FoldChange, fill = Direction)) +
+  geom_hline(yintercept = 0, color = "black") +
+  geom_col(color = "black", width = 0.72) +
+  geom_errorbar(aes(ymin = log2FoldChange-lfcSE, ymax = log2FoldChange+lfcSE),
+                width = 0.28,
+                linewidth = 0.5) +
+  geom_text(aes(y = if_else(log2FoldChange > 0,
+                            log2FoldChange + lfcSE,
+                            log2FoldChange - lfcSE),
+                label = bar_label,
+                hjust = if_else(log2FoldChange > 0, -0.15, 1.15)),
+            size = 3.2,
+            fontface = "bold") +
+  scale_x_discrete(limits = order) +
+  coord_flip(ylim = c(-xmax, xmax)) +
+  scale_fill_manual(values = c("Up-regulated" = "#EF4444", "Down-regulated" = "#3B82F6")) +
+  labs(x = "Gene ID",
+       y = expression(log[2]("Fold Change")),
+       fill = "") +
+  theme_light() +
+  theme(legend.position = "bottom")
+
+pi_score_genes_plot
+
+ggsave("../visualizations/downstream/top_pi_score_genes_bar.png",
+       plot = pi_score_genes_plot, width = 7, height = 4.5, dpi = 300)
+```
